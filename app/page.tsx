@@ -134,7 +134,7 @@ export default function ReelStudio() {
     setLyrics(segs.map(s => s.words.map(w => w.word).join(" ")).join("\n"));
   };
 
-  const transcribe = async (filePath?: string) => {
+  const transcribe = async (filePath?: string, lyricsHint?: string) => {
     // For URL mode: download audio first, then transcribe the local file
     let pathToUse = filePath ?? audioPath ?? (audioMode !== "url" ? videoPath : null);
     setTranscribing(true);
@@ -152,13 +152,20 @@ export default function ReelStudio() {
         setAudioName(dl.title);
       }
       if (!pathToUse) return;
-      setTranscribeStatus("Extracting lyrics with Whisper…");
+      setTranscribeStatus(lyricsHint ? "Matching your lyrics to audio timing…" : "Extracting lyrics with Whisper…");
       const data = await fetch("/api/transcribe", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audio_path: pathToUse, language: transcribeLang }),
+        body: JSON.stringify({ audio_path: pathToUse, language: transcribeLang, lyrics: lyricsHint ?? "" }),
       }).then(r => r.json());
       if (data.error) { alert("Transcription error: " + data.error); return; }
-      if (data.words?.length) applyWords(data.words);
+      if (data.segments?.length) {
+        // Guided mode: backend already structured segments preserving user's line breaks
+        setSegments(data.segments);
+        setLyrics(data.segments.map((s: Segment) => s.words.map((w: WordEntry) => w.word).join(" ")).join("\n"));
+      } else if (data.words?.length) {
+        // Auto mode: group raw word list into segments
+        applyWords(data.words);
+      }
     } finally { setTranscribing(false); setTranscribeStatus(""); }
   };
 
@@ -350,10 +357,36 @@ export default function ReelStudio() {
           {/* Step 3 — Lyrics */}
           <Card>
             <Label>Step 3 · Lyrics & Timing</Label>
-            <textarea value={lyrics} onChange={e => { setLyrics(e.target.value); parseLyrics(e.target.value, segments); }} rows={5}
-              placeholder={"Ankhon ka nasha gulabi\nAb raha na jaaye zara bhi\nTu de permission pee loon\nTere naam ka banu sharabi"}
+
+            {/* Tip for Hindi/Indian songs */}
+            <div className="mb-3 px-3 py-2 rounded-lg text-xs leading-relaxed"
+              style={{ background: "rgba(124,58,237,.1)", color: "#a855f7", borderLeft: "2px solid #7c3aed" }}>
+              <strong>For Hindi / Indian songs:</strong> Auto-transcription often fails on songs with music.
+              Paste the correct lyrics below (one line per subtitle), pick <strong>Hinglish</strong> in Step 2,
+              then click <strong>Match timing to audio</strong> — Whisper will sync each word to the exact beat.
+            </div>
+
+            <textarea value={lyrics} onChange={e => { setLyrics(e.target.value); parseLyrics(e.target.value, segments); }} rows={6}
+              placeholder={"Ankhon ka nasha gulabi\nAb raha na jaaye zara bhi\nTu de permission pee loon\nTere naam ka banu sharabi\nUtre na teri khumari\nBhulun main duniya saari"}
               className="w-full rounded-xl border px-3 py-2.5 text-sm resize-none outline-none transition-colors"
               style={{ background: "var(--surface2)", borderColor: "var(--border)", color: "var(--text)" }} />
+
+            {/* Match timing button — key feature for Indian songs */}
+            {lyrics.trim() && (videoPath || audioPath) && (
+              <div className="mt-2">
+                <Btn variant="ghost" full
+                  onClick={() => transcribe(audioPath ?? videoPath ?? undefined, lyrics.trim())}
+                  disabled={transcribing}
+                  className="text-xs !py-2">
+                  {transcribing
+                    ? <><Loader2 size={12} className="animate-spin" /> {transcribeStatus || "Matching…"}</>
+                    : <><Wand2 size={12} /> Match timing to audio</>}
+                </Btn>
+                <p className="text-xs mt-1.5 text-center" style={{ color: "var(--muted)" }}>
+                  Uses your lyrics as a guide — gives each word its real timestamp
+                </p>
+              </div>
+            )}
 
             {segments.length > 0 && (
               <div className="mt-4 space-y-2">
