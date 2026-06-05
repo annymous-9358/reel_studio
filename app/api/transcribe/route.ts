@@ -1,180 +1,161 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readFile, stat, unlink, mkdir } from "fs/promises";
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
+import path from "path";
+
+const GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+
+// Groq limit is 25 MB. If file is larger, extract compressed mono audio first.
+async function prepareAudio(filePath: string): Promise<{ path: string; cleanup: () => Promise<void> }> {
+  const { size } = await stat(filePath);
+  if (size <= 24 * 1024 * 1024) {
+    return { path: filePath, cleanup: async () => {} };
+  }
+  await mkdir("/tmp/reel_studio", { recursive: true });
+  const tmp = `/tmp/reel_studio/groq_${randomUUID()}.mp3`;
+  await new Promise<void>((res, rej) => {
+    const p = spawn("ffmpeg", [
+      "-y", "-i", filePath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", tmp,
+    ]);
+    p.on("close", (c) => (c === 0 ? res() : rej(new Error("ffmpeg compress failed"))));
+  });
+  return { path: tmp, cleanup: () => unlink(tmp).catch(() => {}) };
+}
+
+function round3(n: number) {
+  return Math.round(n * 1000) / 1000;
+}
 
 export async function POST(req: NextRequest) {
-  const { audio_path, audio_url, language = "auto", lyrics = "" } = await req.json();
-  if (!audio_path && !audio_url) {
-    return NextResponse.json({ error: "Provide audio_path or audio_url" }, { status: 400 });
+  const { audio_path, language = "auto", lyrics = "" } = await req.json();
+  if (!audio_path) return NextResponse.json({ error: "audio_path required" }, { status: 400 });
+
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "GROQ_API_KEY is not set. Add it to your .env.local file." },
+      { status: 500 }
+    );
   }
 
-  const script = `
-import ssl, json, sys, os, subprocess, tempfile
-ssl._create_default_https_context = ssl._create_unverified_context
+  const { path: audioFile, cleanup } = await prepareAudio(audio_path);
 
-cfg       = json.loads(sys.stdin.read())
-audio_src = cfg["audio_src"]
-language  = cfg.get("language", "auto")
-lyrics    = cfg.get("lyrics", "").strip()
+  try {
+    const buf = await readFile(audioFile);
+    const ext = path.extname(audioFile).slice(1).toLowerCase() || "mp3";
+    const mime: Record<string, string> = {
+      mp3: "audio/mpeg", mp4: "video/mp4", m4a: "audio/mp4",
+      wav: "audio/wav",  webm: "audio/webm", ogg: "audio/ogg", flac: "audio/flac",
+    };
 
-tmp_file = None
+    const form = new FormData();
+    form.append("file", new Blob([buf], { type: mime[ext] ?? "audio/mpeg" }), `audio.${ext}`);
+    form.append("model", "whisper-large-v3-turbo"); // fast + multilingual, free tier
+    form.append("response_format", "verbose_json");
 
-# ── Download from URL if needed ───────────────────────────────────────────────
-if audio_src.startswith("URL:"):
-    url = audio_src[4:]
-    tmp_file = tempfile.mktemp(suffix=".mp3")
-    r = subprocess.run(
-        ["yt-dlp", "-x", "--audio-format", "mp3", "-o", tmp_file, url],
-        capture_output=True, text=True
-    )
-    if r.returncode != 0:
-        print(json.dumps({"error": "yt-dlp failed: " + r.stderr[-300:]}))
-        sys.exit(0)
-    audio_src = tmp_file
+    // Language
+    if (language === "hinglish" || language === "hi") form.append("language", "hi");
+    else if (language === "en") form.append("language", "en");
+    // auto: omit — Whisper detects
 
-import whisper
-model = whisper.load_model("small")
+    // Prompt (max ~224 tokens for Groq)
+    let prompt = "";
+    if (language === "hinglish") {
+      prompt = lyrics.trim()
+        ? `Hinglish song, Roman script only, no Devanagari: ${lyrics}`
+        : "Yaar yeh Hinglish song hai. Har word Roman English mein likho. Devanagari mat use karo.";
+    } else if (lyrics.trim()) {
+      prompt = lyrics;
+    }
+    if (prompt) form.append("prompt", prompt.slice(0, 900));
 
-# ── Language kwargs (always transcribe, never translate) ──────────────────────
-lang_kwargs = {"task": "transcribe"}
-
-if language == "hinglish":
-    lang_kwargs["language"] = "hi"
-    # Strong Hinglish-style prompt so Whisper stays in Roman script
-    lang_kwargs["initial_prompt"] = (
-        "Yaar yeh Hinglish song hai. Har word Roman English mein likho, "
-        "jaise: 'Ankhon ka nasha gulabi, Ab raha na jaaye zara bhi'. "
-        "Devanagari mat use karo."
-    )
-elif language == "hi":
-    lang_kwargs["language"] = "hi"
-elif language == "en":
-    lang_kwargs["language"] = "en"
-# else: auto — let Whisper detect
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MODE A: User provided correct lyrics → use Whisper only for TIMING
-# We get word timestamps, then proportionally map the user's words onto them.
-# This guarantees correct text + real audio timing even when Whisper's
-# word recognition fails (e.g. Indian songs with heavy music).
-# ─────────────────────────────────────────────────────────────────────────────
-if lyrics:
-    user_lines = [l.strip() for l in lyrics.split("\\n") if l.strip()]
-
-    # Provide the user's lyrics as a guide so Whisper's segments align better
-    guided_prompt = lang_kwargs.get("initial_prompt", "")
-    lang_kwargs["initial_prompt"] = (guided_prompt + " " + lyrics).strip()
-
-    result = model.transcribe(audio_src, word_timestamps=True, verbose=False, **lang_kwargs)
-
-    # Collect all Whisper word timestamps (text may be wrong — only timing matters)
-    w_times = []
-    for seg in result["segments"]:
-        for w in seg.get("words", []):
-            if w["word"].strip():
-                w_times.append({"start": w["start"], "end": w["end"]})
-
-    # Fallback: distribute evenly over detected audio duration
-    if not w_times:
-        total = result["segments"][-1]["end"] if result["segments"] else 12.0
-        n_total = sum(len(l.split()) for l in user_lines)
-        pw = total / max(n_total, 1)
-        t = 0.0
-        for l in user_lines:
-            for word in l.split():
-                w_times.append({"start": round(t, 3), "end": round(t + pw, 3)})
-                t += pw
-
-    # Proportional mapping: user line word counts → whisper time ranges
-    total_user_words = sum(len(l.split()) for l in user_lines)
-    W = len(w_times)
-    out_segments = []
-    w_pos = 0
-    for line in user_lines:
-        line_words = line.split()
-        n = len(line_words)
-        # How many whisper words does this line span?
-        n_ww = max(1, round(n / total_user_words * W))
-        chunk = w_times[w_pos: w_pos + n_ww]
-        w_pos = min(w_pos + n_ww, W)
-
-        line_start = chunk[0]["start"] if chunk else (w_times[-1]["end"] if w_times else 0)
-        line_end   = chunk[-1]["end"]  if chunk else line_start + 2.0
-        pw = (line_end - line_start) / n
-
-        seg_words = []
-        for wi, word in enumerate(line_words):
-            seg_words.append({
-                "word":  word,
-                "start": round(line_start + wi * pw, 3),
-                "end":   round(line_start + (wi + 1) * pw, 3),
-            })
-        out_segments.append({
-            "start": round(line_start, 3),
-            "end":   round(line_end, 3),
-            "words": seg_words,
-        })
-
-    print(json.dumps({
-        "segments": out_segments,
-        "text":     lyrics,
-        "language": result["language"],
-    }))
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MODE B: Auto-transcription — Whisper extracts both text and timing
-# ─────────────────────────────────────────────────────────────────────────────
-else:
-    result = model.transcribe(audio_src, word_timestamps=True, verbose=False, **lang_kwargs)
-
-    words = []
-    for seg in result["segments"]:
-        for w in seg.get("words", []):
-            clean = w["word"].strip()
-            if clean:
-                words.append({
-                    "word":  clean,
-                    "start": round(w["start"], 3),
-                    "end":   round(w["end"],   3),
-                })
-
-    print(json.dumps({
-        "words":    words,
-        "text":     result["text"].strip(),
-        "language": result["language"],
-    }))
-
-if tmp_file and os.path.exists(tmp_file):
-    os.remove(tmp_file)
-`;
-
-  const src = audio_url ? `URL:${audio_url}` : audio_path;
-  const cfg = JSON.stringify({ audio_src: src, language, lyrics });
-
-  return new Promise<NextResponse>((resolve) => {
-    const proc = spawn("python3", ["-c", script], { stdio: ["pipe", "pipe", "pipe"] });
-    proc.stdin.write(cfg);
-    proc.stdin.end();
-
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d));
-    proc.stderr.on("data", (d) => (stderr += d));
-    proc.on("close", (code) => {
-      if (code !== 0) {
-        resolve(NextResponse.json({ error: stderr.slice(-400) }, { status: 500 }));
-        return;
-      }
-      try {
-        const lastLine = stdout.trim().split("\n").pop()!;
-        const data = JSON.parse(lastLine);
-        if (data.error) {
-          resolve(NextResponse.json({ error: data.error }, { status: 500 }));
-        } else {
-          resolve(NextResponse.json(data));
-        }
-      } catch {
-        resolve(NextResponse.json({ error: "Parse error", raw: stdout.slice(-300) }, { status: 500 }));
-      }
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
     });
-  });
+
+    if (!res.ok) {
+      const err = await res.text();
+      return NextResponse.json({ error: `Groq API error: ${err.slice(0, 300)}` }, { status: 500 });
+    }
+
+    const result = await res.json();
+    type GroqSeg = { start: number; end: number; text: string };
+    const groqSegs: GroqSeg[] = result.segments ?? [];
+    const totalDur: number =
+      groqSegs.length ? groqSegs[groqSegs.length - 1].end : (result.duration ?? 12);
+
+    // ── GUIDED MODE: user provided correct lyrics ────────────────────────────
+    // Groq tells us WHEN the audio spans (start/end of detected speech).
+    // We take the user's exact words and distribute them proportionally
+    // across that detected audio window — correct text + real timing bounds.
+    if (lyrics.trim()) {
+      const userLines = lyrics
+        .split("\n")
+        .map((l: string) => l.trim())
+        .filter(Boolean);
+
+      const audioStart = groqSegs[0]?.start ?? 0;
+      const audioEnd   = groqSegs[groqSegs.length - 1]?.end ?? totalDur;
+      const audioDur   = audioEnd - audioStart;
+
+      const totalWords = userLines.reduce(
+        (s: number, l: string) => s + l.split(/\s+/).length,
+        0
+      );
+      const secPerWord = audioDur / Math.max(totalWords, 1);
+
+      let cursor = audioStart;
+      const outSegs = userLines.map((line: string) => {
+        const words    = line.split(/\s+/);
+        const lineDur  = words.length * secPerWord;
+        const lineStart = cursor;
+        const lineEnd   = cursor + lineDur;
+        cursor = lineEnd;
+        const pw = lineDur / words.length;
+        return {
+          start: round3(lineStart),
+          end:   round3(lineEnd),
+          words: words.map((w, i) => ({
+            word:  w,
+            start: round3(lineStart + i * pw),
+            end:   round3(lineStart + (i + 1) * pw),
+          })),
+        };
+      });
+
+      return NextResponse.json({
+        segments: outSegs,
+        text: lyrics,
+        language: result.language,
+      });
+    }
+
+    // ── AUTO MODE: use Groq's transcribed text with segment timing ───────────
+    // Groq gives segment-level timestamps (no per-word). We split each
+    // segment's text into words and distribute them evenly within the segment.
+    const words: Array<{ word: string; start: number; end: number }> = [];
+    for (const seg of groqSegs) {
+      const segWords = seg.text.trim().split(/\s+/).filter(Boolean);
+      if (!segWords.length) continue;
+      const pw = (seg.end - seg.start) / segWords.length;
+      segWords.forEach((w, i) => {
+        words.push({
+          word:  w,
+          start: round3(seg.start + i * pw),
+          end:   round3(seg.start + (i + 1) * pw),
+        });
+      });
+    }
+
+    return NextResponse.json({
+      words,
+      text:     result.text?.trim() ?? "",
+      language: result.language,
+    });
+  } finally {
+    await cleanup();
+  }
 }
