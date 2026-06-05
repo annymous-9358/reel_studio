@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFile, stat, unlink, mkdir } from "fs/promises";
+import { readFile, unlink, mkdir } from "fs/promises";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import path from "path";
@@ -62,12 +62,12 @@ export async function POST(req: NextRequest) {
   // the user's words evenly. Works for any file, any language, any genre.
   if (lyrics.trim()) {
     const duration = await getAudioDuration(audio_path);
-    const userLines = lyrics.split("\n").map((l) => l.trim()).filter(Boolean);
-    const totalWords = userLines.reduce((s, l) => s + l.split(/\s+/).length, 0);
+    const userLines = lyrics.split("\n").map((l: string) => l.trim()).filter(Boolean);
+    const totalWords = userLines.reduce((s: number, l: string) => s + l.split(/\s+/).length, 0);
     const secPerWord = duration / Math.max(totalWords, 1);
 
     let cursor = 0;
-    const outSegs = userLines.map((line) => {
+    const outSegs = userLines.map((line: string) => {
       const words    = line.split(/\s+/);
       const lineDur  = words.length * secPerWord;
       const lineStart = cursor;
@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
       return {
         start: round3(lineStart),
         end:   round3(lineEnd),
-        words: words.map((w, i) => ({
+        words: words.map((w: string, i: number) => ({
           word:  w,
           start: round3(lineStart + i * pw),
           end:   round3(lineStart + (i + 1) * pw),
@@ -121,17 +121,17 @@ export async function POST(req: NextRequest) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 60_000);
 
-    let res: Response;
-    try {
-      res = await fetch(GROQ_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: form,
-        signal: controller.signal,
-      });
-    } finally {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: controller.signal,
+    }).catch((e: unknown) => {
       clearTimeout(timer);
-    }
+      const msg = e instanceof Error ? e.message : String(e);
+      throw new Error(`Groq request failed: ${msg}`);
+    });
+    clearTimeout(timer);
 
     if (!res.ok) {
       const err = await res.text();
