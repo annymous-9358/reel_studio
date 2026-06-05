@@ -146,7 +146,7 @@ export default function ReelStudio() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: audioURL }),
         }).then(r => r.json());
-        if (dl.error) { alert("Download failed: " + dl.error); return; }
+        if (dl.error) { setTranscribeStatus(""); alert(dl.error); return; }
         pathToUse = dl.path;
         setAudioPath(dl.path);
         setAudioName(dl.title);
@@ -298,7 +298,7 @@ export default function ReelStudio() {
                   style={{ background: "var(--surface2)", borderColor: "var(--border)" }}>
                   <Link size={14} style={{ color: "var(--muted)" }} />
                   <input value={audioURL} onChange={e => { setAudioURL(e.target.value); setAudioPath(null); setAudioName(""); }}
-                    placeholder="Paste Instagram / YouTube URL…"
+                    placeholder="Paste YouTube URL… (Instagram may be blocked)"
                     className="flex-1 bg-transparent outline-none text-sm"
                     style={{ color: "var(--text)" }} />
                   {audioURL && <button onClick={() => { setAudioURL(""); setAudioPath(null); setAudioName(""); }} style={{ color: "var(--muted)" }}><X size={14} /></button>}
@@ -372,7 +372,7 @@ export default function ReelStudio() {
               style={{ background: "var(--surface2)", borderColor: "var(--border)", color: "var(--text)" }} />
 
             {/* Match timing button — key feature for Indian songs */}
-            {lyrics.trim() && (videoPath || audioPath) && (
+            {lyrics.trim() && (videoPath || audioPath || audioURL) && (
               <div className="mt-2">
                 <Btn variant="ghost" full
                   onClick={() => transcribe(audioPath ?? videoPath ?? undefined, lyrics.trim())}
