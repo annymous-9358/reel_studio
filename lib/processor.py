@@ -10,15 +10,29 @@ from PIL import Image, ImageDraw, ImageFont
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
+def _find_impact():
+    candidates = [
+        Path(__file__).parent / "fonts/Impact.ttf",          # bundled (preferred)
+        Path("/System/Library/Fonts/Supplemental/Impact.ttf"), # macOS
+        Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"), # Linux/Render
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return str(Path(__file__).parent / "fonts/Poppins-Regular.ttf")  # fallback
+
+_IMPACT = _find_impact()
+
 FONTS = {
     "great_vibes": str(Path(__file__).parent / "fonts/GreatVibes.ttf"),
     "poppins":     str(Path(__file__).parent / "fonts/Poppins-Light.ttf"),
-    "impact":      "/System/Library/Fonts/Supplemental/Impact.ttf",
+    "impact":      _IMPACT,
 }
 FONT_CURRENT_MAP = {
     "great_vibes": str(Path(__file__).parent / "fonts/GreatVibes.ttf"),
     "poppins":     str(Path(__file__).parent / "fonts/Poppins-Regular.ttf"),
-    "impact":      "/System/Library/Fonts/Supplemental/Impact.ttf",
+    "impact":      _IMPACT,
 }
 
 def log(msg): print(msg, flush=True)
