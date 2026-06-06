@@ -1,5 +1,5 @@
-@import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Great+Vibes&family=Oswald:wght@700&family=Pacifico&family=Poppins:wght@400;600&display=swap');
+@import "tailwindcss";
 
 :root {
   --background: #0a0a0f;
@@ -10,6 +10,7 @@
   --accent: #7c3aed;
   --accent2: #a855f7;
   --muted: #6b6b85;
+  --text: #e8e8f0;
 }
 
 body {

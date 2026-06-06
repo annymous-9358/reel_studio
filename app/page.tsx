@@ -1,15 +1,27 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import NextLink from "next/link";
 import {
   Upload, Music, Wand2, Download, Loader2,
   ChevronDown, X, Plus, Trash2, Link, FileAudio,
-  Sparkles, Move,
+  Sparkles, Move, Scissors,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface WordEntry { word: string; start: number; end: number }
 interface Segment { start: number; end: number; words: WordEntry[] }
+interface VideoEditConfig {
+  trim_start:  number;
+  trim_end:    number | null;
+  speed:       number;
+  volume:      number;   // 0-200 (100 = normal)
+  brightness:  number;   // -50 to +50
+  contrast:    number;   // -50 to +50
+  saturation:  number;   // 0-200 (100 = normal)
+  flip_h:      boolean;
+  flip_v:      boolean;
+}
 interface StyleConfig {
   font: "impact" | "bebas" | "oswald" | "poppins" | "great_vibes" | "pacifico";
   font_size: number;
@@ -88,8 +100,55 @@ export default function ReelStudio() {
   const [jobStatus, setJobStatus]     = useState<{ progress: number; status: string; output?: string; error?: string } | null>(null);
   const [processing, setProcessing]   = useState(false);
 
+  // Inspo copy
+  const [inspoURL, setInspoURL]       = useState("");
+  const [analyzing, setAnalyzing]     = useState(false);
+  const [inspoStatus, setInspoStatus] = useState("");
+  const [inspoApplied, setInspoApplied] = useState(false);
+
+  // Video edit config (neutral defaults; inspo analysis may update color grade)
+  const [videoEdit, setVideoEdit]         = useState<VideoEditConfig>({
+    trim_start: 0, trim_end: null, speed: 1, volume: 100,
+    brightness: 0, contrast: 0, saturation: 100, flip_h: false, flip_v: false,
+  });
+
   const videoRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLInputElement>(null);
+
+  // ── Auto-load video transferred from Video Editor ─────────────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromJob = params.get("from_job");
+    const path    = params.get("path");
+    if (!fromJob || !path) return;
+
+    // Clean the URL immediately so a page refresh doesn't re-trigger
+    window.history.replaceState({}, "", "/");
+
+    const serverPath = decodeURIComponent(path);
+
+    // Fetch as a blob so the browser gives it a local blob:// URL.
+    // This prevents colour-profile discrepancies that can appear when the
+    // browser streams video from an HTTP endpoint vs a locally-owned blob.
+    fetch(`/api/preview?id=${fromJob}`)
+      .then(r => {
+        if (!r.ok) throw new Error("preview not ready");
+        return r.blob();
+      })
+      .then(blob => {
+        const blobURL = URL.createObjectURL(blob);
+        setVideoPath(serverPath);
+        setVideoPreview(blobURL);
+        setVideoName("edited_video.mp4");
+      })
+      .catch(() => {
+        // Fallback: use streaming URL — still works, just may have the
+        // colour-profile quirk on some browsers.
+        setVideoPath(serverPath);
+        setVideoPreview(`/api/preview?id=${fromJob}`);
+        setVideoName("edited_video.mp4");
+      });
+  }, []);
 
   const upload = async (file: File, type: string) => {
     const fd = new FormData(); fd.append("file", file); fd.append("type", type);
@@ -184,10 +243,10 @@ export default function ReelStudio() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         video_path: videoPath,
-        // prefer locally-downloaded file; fall back to URL only if not yet fetched
         audio_path: audioPath ?? undefined,
         audio_url:  (!audioPath && audioMode === "url") ? audioURL : undefined,
         segments, ...style,
+        video_edit: videoEdit,
       }),
     }).then(r => r.json());
     setJobId(job_id);
@@ -196,6 +255,36 @@ export default function ReelStudio() {
       setJobStatus(s);
       if (s.progress >= 100 || s.error) { clearInterval(iv); setProcessing(false); }
     }, 800);
+  };
+
+  const analyzeInspo = async () => {
+    if (!inspoURL) return;
+    setAnalyzing(true);
+    setInspoApplied(false);
+    setInspoStatus("Downloading inspo video…");
+    try {
+      const data = await fetch("/api/analyze-style", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: inspoURL, transcribe: true, language: transcribeLang }),
+      }).then(r => r.json());
+      if (data.error) { alert("Analysis failed: " + data.error); return; }
+
+      // Apply detected subtitle style
+      if (data.style) setStyle(s => ({ ...s, ...data.style }));
+
+      // Apply detected video color grade
+      if (data.color_grade) setVideoEdit(e => ({ ...e, ...data.color_grade }));
+
+      // Apply transcribed words as segments
+      if (data.words?.length) applyWords(data.words);
+
+      setInspoApplied(true);
+      setInspoStatus("✓ Style + timing copied! Adjust anything below then generate.");
+    } catch (e) {
+      alert("Error analyzing inspo: " + e);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const isDone = jobStatus?.progress === 100 && !jobStatus.error;
@@ -213,6 +302,15 @@ export default function ReelStudio() {
         <span className="font-bold text-lg">Reel Studio</span>
         <span className="text-xs px-2 py-0.5 rounded-full ml-1"
           style={{ background: "var(--surface2)", color: "var(--muted)" }}>beta</span>
+
+        {/* Nav */}
+        <div className="ml-auto flex items-center">
+          <NextLink href="/edit"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all border hover:opacity-80"
+            style={{ borderColor: "var(--border)", background: "var(--surface2)", color: "var(--muted)" }}>
+            <Scissors size={12} /> Video Editor
+          </NextLink>
+        </div>
       </header>
 
       {/* Body */}
@@ -357,6 +455,82 @@ export default function ReelStudio() {
                     {transcribeStatus || "Running Whisper…"}{audioMode === "url" ? " — may take a minute" : ""}
                   </p>
                 )}
+              </div>
+            )}
+          </Card>
+
+          {/* Inspo Copy ── optional ──────────────────────────────────────── */}
+          <Card>
+            {/* Header with gradient badge */}
+            <div className="flex items-center justify-between mb-1">
+              <Label>✨ Copy Style from Inspo</Label>
+              <span className="text-[10px] px-2 py-0.5 rounded-full"
+                style={{ background: "rgba(124,58,237,.18)", color: "#a855f7" }}>optional</span>
+            </div>
+            <p className="text-xs mb-4 leading-relaxed" style={{ color: "var(--muted)" }}>
+              Paste any reel or YouTube URL. We&apos;ll detect where text sits, its color &amp; size,
+              and transcribe the audio — all auto-applied to your video. Then tweak freely.
+            </p>
+
+            {/* URL input */}
+            <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border mb-3"
+              style={{ background: "var(--surface2)", borderColor: inspoApplied ? "#7c3aed" : "var(--border)" }}>
+              <Sparkles size={14} style={{ color: "#a855f7", flexShrink: 0 }} />
+              <input
+                value={inspoURL}
+                onChange={e => { setInspoURL(e.target.value); setInspoApplied(false); setInspoStatus(""); }}
+                placeholder="Instagram / YouTube / reel URL…"
+                className="flex-1 bg-transparent outline-none text-sm"
+                style={{ color: "var(--text)" }}
+              />
+              {inspoURL && (
+                <button onClick={() => { setInspoURL(""); setInspoApplied(false); setInspoStatus(""); }}
+                  style={{ color: "var(--muted)" }}><X size={14} /></button>
+              )}
+            </div>
+
+            {/* Language picker (reuse the same state as Step 2) */}
+            {inspoURL && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {([
+                  { key: "hinglish", label: "Hinglish" },
+                  { key: "hi",       label: "Hindi" },
+                  { key: "en",       label: "English" },
+                  { key: "auto",     label: "Auto" },
+                ] as const).map(opt => (
+                  <button key={opt.key} onClick={() => setTranscribeLang(opt.key)}
+                    className="px-3 py-1 rounded-lg text-xs font-medium border transition-all"
+                    style={transcribeLang === opt.key
+                      ? { borderColor: "#7c3aed", background: "rgba(124,58,237,.18)", color: "#a855f7" }
+                      : { borderColor: "var(--border)", background: "var(--surface2)", color: "var(--muted)" }}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <Btn variant={inspoApplied ? "ghost" : "primary"} full
+              disabled={!inspoURL || analyzing} onClick={analyzeInspo}>
+              {analyzing
+                ? <><Loader2 size={13} className="animate-spin" /> {inspoStatus || "Analyzing…"}</>
+                : inspoApplied
+                  ? <><Wand2 size={13} /> Re-analyze</>
+                  : <><Wand2 size={13} /> Analyze &amp; Copy Style</>}
+            </Btn>
+
+            {analyzing && (
+              <p className="text-xs text-center mt-2" style={{ color: "var(--muted)" }}>
+                Downloading + detecting text + running Whisper — takes 1-3 min
+              </p>
+            )}
+
+            {inspoApplied && !analyzing && (
+              <div className="mt-3 px-3 py-2.5 rounded-xl text-xs leading-relaxed"
+                style={{ background: "rgba(124,58,237,.1)", borderLeft: "2px solid #7c3aed", color: "#a855f7" }}>
+                {inspoStatus}
+                <span className="block mt-0.5 opacity-70">
+                  Font · position · color · lyrics all pre-filled ↓ edit freely
+                </span>
               </div>
             )}
           </Card>

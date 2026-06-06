@@ -234,21 +234,105 @@ def process(cfg):
         else:
             log(f"ERROR:Audio download failed: {r.stderr[:200]}")
 
-    # ── Extract frames ────────────────────────────────────────────────────────
+    # ── Probe fps + dimensions ────────────────────────────────────────────────
     progress(10)
     log("STATUS:Extracting frames...")
-    probe = subprocess.run(
+    probe_fps = subprocess.run(
         ["ffprobe","-v","quiet","-select_streams","v:0",
          "-show_entries","stream=r_frame_rate","-of","csv=p=0", video_path],
         capture_output=True, text=True
     )
-    num,den = probe.stdout.strip().split("/")
-    fps = float(num)/float(den)
+    num, den = probe_fps.stdout.strip().split("/")
+    fps = float(num) / float(den)
 
-    subprocess.run(
-        ["ffmpeg","-y","-i",video_path,"-vsync","0",f"{frames_dir}/%06d.png"],
-        capture_output=True, check=True
+    probe_dim = subprocess.run(
+        ["ffprobe","-v","quiet","-select_streams","v:0",
+         "-show_entries","stream=width,height","-of","csv=p=0", video_path],
+        capture_output=True, text=True
     )
+    try:
+        dp = probe_dim.stdout.strip().split(",")
+        vid_w, vid_h = int(dp[0]), int(dp[1])
+    except Exception:
+        vid_w, vid_h = 1080, 1920
+
+    # ── Calculate HD scale (upscale to 1080p min, keep if already ≥ 1080p) ───
+    is_portrait = vid_h >= vid_w
+    scale_vf    = None
+    scale_factor = 1.0
+
+    if is_portrait and vid_h < 1920:
+        tgt_h    = 1920
+        tgt_w    = round(vid_w * tgt_h / vid_h / 2) * 2   # must be even
+        scale_vf = f"scale={tgt_w}:{tgt_h}:flags=lanczos"
+        scale_factor = tgt_h / vid_h
+        log(f"STATUS:Upscaling {vid_w}×{vid_h} → {tgt_w}×{tgt_h} (HD 1080p)")
+    elif not is_portrait and vid_w < 1920:
+        tgt_w    = 1920
+        tgt_h    = round(vid_h * tgt_w / vid_w / 2) * 2
+        scale_vf = f"scale={tgt_w}:{tgt_h}:flags=lanczos"
+        scale_factor = tgt_w / vid_w
+        log(f"STATUS:Upscaling {vid_w}×{vid_h} → {tgt_w}×{tgt_h} (HD 1080p)")
+
+    # Scale pixel-based style values proportionally so text looks the same size
+    if scale_factor != 1.0:
+        cfg = dict(cfg)
+        cfg["font_size"]   = round(cfg.get("font_size",  28) * scale_factor)
+        cfg["stroke"]      = max(1, round(cfg.get("stroke",   2) * scale_factor))
+        cfg["shadow_blur"] = round(cfg.get("shadow_blur", 0) * scale_factor)
+
+    # ── Video edit settings ───────────────────────────────────────────────────
+    ve          = cfg.get("video_edit", {})
+    trim_start  = float(ve.get("trim_start", 0))
+    trim_end_v  = ve.get("trim_end", None)
+    trim_end    = float(trim_end_v) if trim_end_v is not None else None
+    speed       = max(0.25, float(ve.get("speed",    1.0)))
+    volume      = float(ve.get("volume",   100)) / 100.0
+    ve_bright   = float(ve.get("brightness", 0)) / 100.0
+    ve_contrast = float(ve.get("contrast",   0)) / 50.0 + 1.0
+    ve_sat      = float(ve.get("saturation", 100)) / 100.0
+    flip_h      = bool(ve.get("flip_h", False))
+    flip_v      = bool(ve.get("flip_v", False))
+
+    # Video filter chain: color → speed → flip → HD scale
+    vf_parts = []
+    if abs(ve_bright) > 0.005 or abs(ve_contrast-1.0) > 0.01 or abs(ve_sat-1.0) > 0.01:
+        vf_parts.append(f"eq=brightness={ve_bright:.3f}:contrast={ve_contrast:.3f}:saturation={ve_sat:.3f}")
+    if speed != 1.0:
+        vf_parts.append(f"setpts={1.0/speed:.4f}*PTS")
+    if flip_h: vf_parts.append("hflip")
+    if flip_v: vf_parts.append("vflip")
+    if scale_vf: vf_parts.append(scale_vf)
+    vf_str = ",".join(vf_parts) if vf_parts else None
+
+    # Audio filter: speed (atempo) + volume
+    af_parts = []
+    if speed != 1.0:
+        if 0.5 <= speed <= 2.0:
+            af_parts.append(f"atempo={speed:.3f}")
+        elif speed > 2.0:
+            af_parts.append(f"atempo=2.0,atempo={speed/2:.3f}")
+        else:  # < 0.5
+            af_parts.append(f"atempo=0.5,atempo={speed*2:.3f}")
+    if abs(volume - 1.0) > 0.01:
+        af_parts.append(f"volume={volume:.3f}")
+    af_str = ",".join(af_parts) if af_parts else None
+
+    effective_fps = fps * speed   # framerate for encoder (achieves playback speed)
+
+    # ── Extract frames ────────────────────────────────────────────────────────
+    extract_cmd = ["ffmpeg", "-y"]
+    if trim_start > 0:
+        extract_cmd += ["-ss", str(trim_start)]
+    extract_cmd += ["-i", video_path]
+    if trim_end is not None:
+        extract_cmd += ["-t", str(max(0.1, trim_end - trim_start))]
+    extract_cmd += ["-vsync", "0"]
+    if vf_str:
+        extract_cmd += ["-vf", vf_str]
+    extract_cmd += [f"{frames_dir}/%06d.png"]
+    subprocess.run(extract_cmd, capture_output=True, check=True)
+
     frames = sorted(frames_dir.glob("*.png"))
     n = len(frames)
     log(f"STATUS:Processing {n} frames at {fps:.1f} fps...")
@@ -256,7 +340,7 @@ def process(cfg):
     # ── Render frames ─────────────────────────────────────────────────────────
     progress(15)
     for i, fp in enumerate(frames):
-        t   = (int(fp.stem)-1) / fps
+        t   = trim_start + (int(fp.stem)-1) / fps   # account for trim offset in segment timestamps
         img = Image.open(fp).convert("RGB")
         img = render_frame(img, t, segments, cfg)
         img.save(out_frames / fp.name, "PNG")
@@ -269,17 +353,25 @@ def process(cfg):
     log("STATUS:Encoding video...")
     cmd = [
         "ffmpeg","-y",
-        "-framerate", str(fps),
+        "-framerate", str(effective_fps),
         "-i", f"{out_frames}/%06d.png",
     ]
     if audio_path:
-        cmd += ["-i", audio_path, "-map","0:v","-map","1:a",
-                "-c:a","aac","-b:a","192k","-shortest"]
+        cmd += ["-i", audio_path]
     else:
-        cmd += ["-i", video_path, "-map","0:v","-map","1:a",
-                "-c:a","aac","-b:a","192k","-shortest"]
-    cmd += ["-c:v","libx264","-crf","17","-preset","fast",
-            "-pix_fmt","yuv420p", output_video]
+        # Seek the original video audio to the trim point
+        if trim_start > 0:
+            cmd += ["-ss", str(trim_start)]
+        cmd += ["-i", video_path]
+        if trim_end is not None:
+            cmd += ["-t", str(max(0.1, trim_end - trim_start))]
+
+    cmd += ["-map","0:v","-map","1:a","-c:a","aac","-b:a","256k"]
+    if af_str:
+        cmd += ["-af", af_str]
+    cmd += ["-shortest",
+            "-c:v","libx264","-crf","15","-preset","medium",
+            "-pix_fmt","yuv420p","-movflags","+faststart", output_video]
 
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
