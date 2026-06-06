@@ -142,6 +142,10 @@ def main():
         scale_vf = (f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease,"
                     f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1")
 
+        # BT.709 color metadata flags — added to every libx264 encode so players
+        # never have to guess the color space (unknown → wrong matrix → color shift).
+        _bt709 = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+
         # ── 2. Normalize each item → MP4 clip ─────────────────────────────────
         clips = []
         for i, item in enumerate(items):
@@ -153,7 +157,7 @@ def main():
                 subprocess.run([
                     "ffmpeg", "-y", "-loop", "1", "-t", str(dur), "-i", item["path"],
                     "-vf", f"{scale_vf},fps=30",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", out_clip
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", *_bt709, "-an", out_clip
                 ], capture_output=True)
             else:  # video
                 ts  = float(item.get("trim_start", 0))
@@ -163,7 +167,7 @@ def main():
                 cmd += ["-i", item["path"]]
                 if te is not None: cmd += ["-t", str(float(te) - ts)]
                 cmd += ["-vf", f"{scale_vf},fps=30",
-                        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-an", out_clip]
+                        "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", *_bt709, "-an", out_clip]
                 subprocess.run(cmd, capture_output=True)
 
             clips.append(out_clip)
@@ -199,10 +203,20 @@ def main():
         if fv: vf.append("vflip")
 
         effected = os.path.join(tmp, "effected.mp4")
-        subprocess.run(["ffmpeg", "-y", "-i", combined,
-                        "-vf", ",".join(vf),
-                        "-c:v", "libx264", "-crf", "16", "-preset", "fast", effected],
-                       capture_output=True)
+        if vf:
+            # Apply filters + tag bt709 metadata
+            subprocess.run(["ffmpeg", "-y", "-i", combined,
+                            "-vf", ",".join(vf),
+                            "-c:v", "libx264", "-crf", "16", "-preset", "fast",
+                            "-pix_fmt", "yuv420p", *_bt709, effected],
+                           capture_output=True)
+        else:
+            # No visual changes — just copy to stamp bt709 metadata (fast stream-copy
+            # preserves original quality; re-encode only when we actually need metadata)
+            subprocess.run(["ffmpeg", "-y", "-i", combined,
+                            "-c:v", "libx264", "-crf", "16", "-preset", "fast",
+                            "-pix_fmt", "yuv420p", *_bt709, effected],
+                           capture_output=True)
 
         # ── 5. Audio ───────────────────────────────────────────────────────────
         prog(50, "Processing audio…")
@@ -270,6 +284,7 @@ def main():
                             "-i", current,
                             "-map", "0:v", "-map", "1:a",
                             "-c:v", "libx264", "-crf", "15", "-preset", "medium",
+                            "-pix_fmt", "yuv420p", *_bt709,
                             "-c:a", "copy", "-movflags", "+faststart", output],
                            capture_output=True)
         else:

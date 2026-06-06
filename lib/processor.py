@@ -321,7 +321,15 @@ def process(cfg):
     effective_fps = fps * speed   # framerate for encoder (achieves playback speed)
 
     # ── Extract frames ────────────────────────────────────────────────────────
-    extract_cmd = ["ffmpeg", "-y"]
+    # Tell ffmpeg to interpret the source as BT.709 regardless of the metadata
+    # written in the file.  Videos with color_space=unknown get decoded with the
+    # wrong matrix on some builds (BT.601 instead of BT.709) which produces the
+    # dark/reddish shift the user reported.  Input-side flags are universally
+    # supported (no libzimg needed) and override the container metadata.
+    extract_cmd = ["ffmpeg", "-y",
+                   "-color_primaries", "bt709",
+                   "-color_trc",       "bt709",
+                   "-colorspace",      "bt709"]
     if trim_start > 0:
         extract_cmd += ["-ss", str(trim_start)]
     extract_cmd += ["-i", video_path]
@@ -371,7 +379,9 @@ def process(cfg):
         cmd += ["-af", af_str]
     cmd += ["-shortest",
             "-c:v","libx264","-crf","15","-preset","medium",
-            "-pix_fmt","yuv420p","-movflags","+faststart", output_video]
+            "-pix_fmt","yuv420p",
+            "-colorspace","bt709","-color_primaries","bt709","-color_trc","bt709",
+            "-movflags","+faststart", output_video]
 
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
