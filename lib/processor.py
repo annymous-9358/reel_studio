@@ -6,19 +6,32 @@ Outputs progress lines: PROGRESS:0-100 and DONE:<output_path>
 """
 import sys, json, os, shutil, math, subprocess, tempfile, ssl
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
+_LIB = Path(__file__).parent
+
+def _find(candidates):
+    for p in candidates:
+        if Path(p).exists(): return str(p)
+    return None
+
+_FALLBACK = str(_LIB / "fonts/Poppins-Regular.ttf")
+_FALLBACK_SCRIPT = str(_LIB / "fonts/GreatVibes.ttf")
+
 FONTS = {
-    "great_vibes": str(Path(__file__).parent / "fonts/GreatVibes.ttf"),
-    "poppins":     str(Path(__file__).parent / "fonts/Poppins-Light.ttf"),
-    "impact":      "/System/Library/Fonts/Supplemental/Impact.ttf",
-}
-FONT_CURRENT_MAP = {
-    "great_vibes": str(Path(__file__).parent / "fonts/GreatVibes.ttf"),
-    "poppins":     str(Path(__file__).parent / "fonts/Poppins-Regular.ttf"),
-    "impact":      "/System/Library/Fonts/Supplemental/Impact.ttf",
+    "impact":      _find([str(_LIB/"fonts/Impact.ttf"), "/System/Library/Fonts/Supplemental/Impact.ttf",
+                          "/usr/local/share/fonts/reelstudio/Impact.ttf",
+                          "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"]) or _FALLBACK,
+    "bebas":       _find(["/usr/local/share/fonts/reelstudio/BebasNeue.ttf",
+                          str(_LIB/"fonts/BebasNeue.ttf")]) or _FALLBACK,
+    "oswald":      _find(["/usr/local/share/fonts/reelstudio/Oswald-Bold.ttf",
+                          str(_LIB/"fonts/Oswald-Bold.ttf")]) or _FALLBACK,
+    "poppins":     str(_LIB / "fonts/Poppins-Regular.ttf"),
+    "great_vibes": str(_LIB / "fonts/GreatVibes.ttf"),
+    "pacifico":    _find(["/usr/local/share/fonts/reelstudio/Pacifico.ttf",
+                          str(_LIB/"fonts/Pacifico.ttf")]) or _FALLBACK_SCRIPT,
 }
 
 def log(msg): print(msg, flush=True)
@@ -35,12 +48,13 @@ def tw(draw, text, font):
     bb = draw.textbbox((0,0), text, font=font)
     return bb[2]-bb[0], bb[3]-bb[1]
 
-def draw_text_styled(draw, xy, text, font, color, stroke_px):
+def draw_text_styled(draw, xy, text, font, color, stroke_px, stroke_rgba=(0,0,0,153)):
     x, y = xy
     if stroke_px > 0:
-        sc = (0,0,0,int(255*0.6))
-        for ox,oy in [(2,2),(1,2),(2,1),(3,3)]:
-            draw.text((x+ox, y+oy), text, font=font, fill=sc)
+        for ox, oy in [(ox, oy) for ox in range(-stroke_px, stroke_px+1)
+                                for oy in range(-stroke_px, stroke_px+1)
+                                if (ox or oy)]:
+            draw.text((x+ox, y+oy), text, font=font, fill=stroke_rgba)
     draw.text((x, y), text, font=font, fill=color)
 
 def build_rows(all_words, max_w, font_n, draw):
@@ -58,22 +72,34 @@ def build_rows(all_words, max_w, font_n, draw):
 
 def render_frame(img, t, segments, cfg):
     W, H = img.size
-    font_key  = cfg.get("font", "great_vibes")
-    font_size = cfg.get("font_size", 28)
-    position  = cfg.get("position", "center")   # top/center/bottom
-    color_hex = cfg.get("color", "#ffffff")
-    animation = cfg.get("animation", "word_by_word")  # word_by_word/fade/none
-    stroke_px = cfg.get("stroke", 2)
-    bounce_dur= 0.12
+    font_key    = cfg.get("font", "impact")
+    font_size   = cfg.get("font_size", 28)
+    color_hex   = cfg.get("color", "#ffffff")
+    animation   = cfg.get("animation", "word_by_word")
+    stroke_px   = cfg.get("stroke", 2)
+    stroke_hex  = cfg.get("stroke_color", "#000000")
+    shadow_blur = cfg.get("shadow_blur", 0)
+    bounce_dur  = 0.12
 
-    font_path  = FONTS.get(font_key, FONTS["great_vibes"])
-    font_path_c= FONT_CURRENT_MAP.get(font_key, font_path)
-    font_n = get_font(font_path,   font_size)
-    font_c = get_font(font_path_c, int(font_size * 1.12))
+    # Position: new x/y percent API; legacy top/center/bottom fallback
+    pos_x_pct = cfg.get("position_x", None)
+    pos_y_pct = cfg.get("position_y", None)
+    if pos_x_pct is None or pos_y_pct is None:
+        legacy = cfg.get("position", "center")
+        pos_x_pct = 50
+        pos_y_pct = {"top": 10, "center": 50, "bottom": 85}.get(legacy, 50)
 
-    # Parse color
+    font_path = FONTS.get(font_key, FONTS["poppins"])
+    font_n = get_font(font_path, font_size)
+    font_c = get_font(font_path, int(font_size * 1.12))
+
+    # Parse text color
     h = color_hex.lstrip("#")
     color = tuple(int(h[i:i+2],16) for i in (0,2,4)) + (255,)
+
+    # Parse stroke color
+    hs = stroke_hex.lstrip("#")
+    stroke_rgba = tuple(int(hs[i:i+2],16) for i in (0,2,4)) + (200,)
 
     # Find active segment
     seg = next((s for s in segments if s["start"] <= t < s["end"]), None)
@@ -96,12 +122,9 @@ def render_frame(img, t, segments, cfg):
     n_rows  = len(rows)
     block_h = n_rows*fh + (n_rows-1)*row_gap
 
-    if position == "top":
-        block_y = int(H * 0.05)
-    elif position == "bottom":
-        block_y = H - block_h - int(H * 0.07)
-    else:  # center
-        block_y = H//2 - block_h//2
+    center_x = int(W * pos_x_pct / 100)
+    center_y = int(H * pos_y_pct / 100)
+    block_y  = max(MARGIN, min(center_y - block_h // 2, H - block_h - MARGIN))
 
     for ri, row in enumerate(rows):
         y = block_y + ri*(fh+row_gap)
@@ -128,7 +151,7 @@ def render_frame(img, t, segments, cfg):
         vis_w = sum(tw(draw, item[0]["word"] if isinstance(item, tuple) else item["word"], font_n)[0]
                     for item in word_items)
         vis_w += sp_w * max(len(word_items)-1, 0)
-        x = max(MARGIN, (W-vis_w)//2)
+        x = max(MARGIN, center_x - vis_w // 2)
 
         for item in word_items:
             entry = item[0] if isinstance(item, tuple) else item
@@ -157,11 +180,25 @@ def render_frame(img, t, segments, cfg):
                 sw=max(1,int(ww*scale)); sh=max(1,int(wh*scale))
                 tmp=Image.new("RGBA",(ww+12,wh+12),(0,0,0,0))
                 td=ImageDraw.Draw(tmp)
-                draw_text_styled(td,(6,6),word,font,word_color,stroke_px)
+                if shadow_blur > 0:
+                    stmp=Image.new("RGBA",(ww+12,wh+12),(0,0,0,0))
+                    sd=ImageDraw.Draw(stmp)
+                    sd.text((8,8),word,font=font,fill=(0,0,0,180))
+                    stmp=stmp.filter(ImageFilter.GaussianBlur(shadow_blur*0.5))
+                    tmp=Image.alpha_composite(tmp,stmp)
+                    td=ImageDraw.Draw(tmp)
+                draw_text_styled(td,(6,6),word,font,word_color,stroke_px,stroke_rgba)
                 tmp=tmp.resize((sw,sh),Image.LANCZOS)
                 img.paste(tmp,(x+(ww_n-sw)//2,y+(fh-sh)//2),tmp)
             else:
-                draw_text_styled(draw,(x,y),word,font,word_color,stroke_px)
+                if shadow_blur > 0:
+                    stmp=Image.new("RGBA",img.size,(0,0,0,0))
+                    sd=ImageDraw.Draw(stmp)
+                    sd.text((x+shadow_blur//2,y+shadow_blur//2),word,font=font,fill=(0,0,0,180))
+                    stmp=stmp.filter(ImageFilter.GaussianBlur(shadow_blur*0.5))
+                    img=Image.alpha_composite(img,stmp)
+                    draw=ImageDraw.Draw(img)
+                draw_text_styled(draw,(x,y),word,font,word_color,stroke_px,stroke_rgba)
             x += ww_n+sp_w
 
     return img.convert("RGB")

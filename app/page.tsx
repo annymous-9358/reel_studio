@@ -4,25 +4,31 @@ import { useState, useRef, useCallback } from "react";
 import {
   Upload, Music, Wand2, Download, Loader2,
   ChevronDown, X, Plus, Trash2, Link, FileAudio,
-  AlignCenter, PanelTop, PanelBottom, Sparkles,
+  Sparkles, Move,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface WordEntry { word: string; start: number; end: number }
 interface Segment { start: number; end: number; words: WordEntry[] }
 interface StyleConfig {
-  font: "great_vibes" | "poppins" | "impact";
+  font: "impact" | "bebas" | "oswald" | "poppins" | "great_vibes" | "pacifico";
   font_size: number;
-  position: "top" | "center" | "bottom";
+  position_x: number;
+  position_y: number;
   color: string;
   animation: "word_by_word" | "fade" | "none";
   stroke: number;
+  stroke_color: string;
+  shadow_blur: number;
 }
 
 const FONTS = [
-  { key: "great_vibes", label: "Great Vibes",  sample: "Elegant" },
-  { key: "poppins",     label: "Poppins",       sample: "Modern"  },
-  { key: "impact",      label: "Impact",        sample: "BOLD"    },
+  { key: "impact",      label: "Impact",      sample: "IMPACT",   family: "Impact, 'Arial Black', sans-serif" },
+  { key: "bebas",       label: "Bebas Neue",  sample: "BEBAS",    family: "'Bebas Neue', Impact, sans-serif" },
+  { key: "oswald",      label: "Oswald",      sample: "OSWALD",   family: "'Oswald', sans-serif" },
+  { key: "poppins",     label: "Poppins",     sample: "Poppins",  family: "'Poppins', sans-serif" },
+  { key: "great_vibes", label: "Great Vibes", sample: "Elegant",  family: "'Great Vibes', cursive" },
+  { key: "pacifico",    label: "Pacifico",    sample: "Pacifico", family: "'Pacifico', cursive" },
 ] as const;
 
 const ANIMATIONS = [
@@ -74,8 +80,9 @@ export default function ReelStudio() {
   const [transcribeStatus, setTranscribeStatus] = useState("");
   const [transcribeLang, setTranscribeLang] = useState<"auto" | "en" | "hi" | "hinglish">("hinglish");
   const [style, setStyle]             = useState<StyleConfig>({
-    font: "great_vibes", font_size: 26, position: "center",
+    font: "impact", font_size: 26, position_x: 50, position_y: 50,
     color: "#ffffff", animation: "word_by_word", stroke: 2,
+    stroke_color: "#000000", shadow_blur: 4,
   });
   const [jobId, setJobId]             = useState<string | null>(null);
   const [jobStatus, setJobStatus]     = useState<{ progress: number; status: string; output?: string; error?: string } | null>(null);
@@ -422,60 +429,56 @@ export default function ReelStudio() {
           {/* Step 4 — Style */}
           <Card>
             <Label>Step 4 · Style</Label>
-            <div className="space-y-5">
+            <div className="space-y-4">
+
+              {/* Position picker */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Move size={11} style={{ color: "var(--muted)" }} />
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>Text Position · drag or click to place</p>
+                </div>
+                <PositionPicker
+                  videoPreview={videoPreview}
+                  posX={style.position_x}
+                  posY={style.position_y}
+                  onChange={(x, y) => setStyle(s => ({ ...s, position_x: x, position_y: y }))}
+                  styleConfig={style}
+                  sampleText={segments[0]?.words.map(w => w.word).join(" ") || "Your text here"}
+                />
+              </div>
 
               {/* Font */}
               <div>
                 <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Font</p>
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-3 gap-1.5">
                   {FONTS.map(f => (
                     <button key={f.key} onClick={() => setStyle(s => ({ ...s, font: f.key }))}
-                      className="py-3 px-2 rounded-xl border text-center transition-all text-xs"
+                      className="py-2.5 px-1 rounded-xl border text-center transition-all"
                       style={style.font === f.key
-                        ? { borderColor: "#7c3aed", background: "rgba(124,58,237,.15)", color: "#a855f7" }
-                        : { borderColor: "var(--border)", background: "var(--surface2)", color: "var(--muted)" }}>
-                      <span className="block font-semibold">{f.label}</span>
-                      <span className="block opacity-60 mt-0.5">{f.sample}</span>
+                        ? { borderColor: "#7c3aed", background: "rgba(124,58,237,.15)" }
+                        : { borderColor: "var(--border)", background: "var(--surface2)" }}>
+                      <span className="block text-xs font-semibold truncate"
+                        style={{ color: style.font === f.key ? "#a855f7" : "var(--text)", fontFamily: f.family }}>
+                        {f.sample}
+                      </span>
+                      <span className="block text-[10px] mt-0.5 truncate" style={{ color: "var(--muted)" }}>{f.label}</span>
                     </button>
                   ))}
-                </div>
-              </div>
-
-              {/* Position */}
-              <div>
-                <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Text Position</p>
-                <div className="flex gap-2">
-                  {(["top", "center", "bottom"] as const).map(p => {
-                    const Icon = p === "top" ? PanelTop : p === "center" ? AlignCenter : PanelBottom;
-                    return (
-                      <button key={p} onClick={() => setStyle(s => ({ ...s, position: p }))}
-                        className="flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs transition-all"
-                        style={style.position === p
-                          ? { borderColor: "#7c3aed", background: "rgba(124,58,237,.15)", color: "#a855f7" }
-                          : { borderColor: "var(--border)", background: "var(--surface2)", color: "var(--muted)" }}>
-                        <Icon size={15} />
-                        <span className="capitalize">{p}</span>
-                      </button>
-                    );
-                  })}
                 </div>
               </div>
 
               {/* Animation */}
               <div>
                 <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Animation</p>
-                <div className="space-y-1.5">
+                <div className="grid grid-cols-3 gap-1.5">
                   {ANIMATIONS.map(a => (
                     <button key={a.key} onClick={() => setStyle(s => ({ ...s, animation: a.key }))}
-                      className="w-full flex items-start gap-3 px-3 py-2.5 rounded-xl border text-left transition-all"
+                      className="py-2.5 px-2 rounded-xl border text-center transition-all"
                       style={style.animation === a.key
                         ? { borderColor: "#7c3aed", background: "rgba(124,58,237,.15)" }
                         : { borderColor: "var(--border)", background: "var(--surface2)" }}>
-                      <span className={`w-2 h-2 rounded-full mt-1 shrink-0 ${style.animation === a.key ? "bg-purple-500" : "bg-gray-600"}`} />
-                      <div>
-                        <p className="text-sm font-medium" style={{ color: style.animation === a.key ? "#a855f7" : "var(--text)" }}>{a.label}</p>
-                        <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>{a.desc}</p>
-                      </div>
+                      <p className="text-xs font-medium" style={{ color: style.animation === a.key ? "#a855f7" : "var(--text)" }}>{a.label}</p>
+                      <p className="text-[10px] mt-0.5 leading-tight" style={{ color: "var(--muted)" }}>{a.desc}</p>
                     </button>
                   ))}
                 </div>
@@ -484,7 +487,7 @@ export default function ReelStudio() {
               {/* Color + Size */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Color</p>
+                  <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Text color</p>
                   <div className="flex items-center gap-2 px-3 py-2 rounded-xl border"
                     style={{ background: "var(--surface2)", borderColor: "var(--border)" }}>
                     <input type="color" value={style.color} onChange={e => setStyle(s => ({ ...s, color: e.target.value }))}
@@ -494,11 +497,37 @@ export default function ReelStudio() {
                 </div>
                 <div>
                   <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Size · {style.font_size}px</p>
-                  <div className="px-1 py-2">
-                    <input type="range" min={14} max={52} step={2} value={style.font_size}
+                  <div className="px-1 py-2.5">
+                    <input type="range" min={14} max={72} step={2} value={style.font_size}
                       onChange={e => setStyle(s => ({ ...s, font_size: +e.target.value }))}
                       className="w-full" style={{ accentColor: "#7c3aed" }} />
                   </div>
+                </div>
+              </div>
+
+              {/* Outline */}
+              <div>
+                <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Outline</p>
+                <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl border"
+                  style={{ background: "var(--surface2)", borderColor: "var(--border)" }}>
+                  <div className="flex items-center gap-2 flex-1">
+                    <input type="color" value={style.stroke_color} onChange={e => setStyle(s => ({ ...s, stroke_color: e.target.value }))}
+                      className="w-6 h-6 rounded cursor-pointer p-0 border-0 shrink-0" style={{ background: "transparent" }} />
+                    <input type="range" min={0} max={8} step={1} value={style.stroke}
+                      onChange={e => setStyle(s => ({ ...s, stroke: +e.target.value }))}
+                      className="flex-1" style={{ accentColor: "#7c3aed" }} />
+                    <span className="text-xs w-4 text-right shrink-0" style={{ color: "var(--muted)" }}>{style.stroke}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Shadow */}
+              <div>
+                <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Shadow blur · {style.shadow_blur === 0 ? "off" : style.shadow_blur + "px"}</p>
+                <div className="px-3 py-1">
+                  <input type="range" min={0} max={20} step={1} value={style.shadow_blur}
+                    onChange={e => setStyle(s => ({ ...s, shadow_blur: +e.target.value }))}
+                    className="w-full" style={{ accentColor: "#7c3aed" }} />
                 </div>
               </div>
 
@@ -571,6 +600,103 @@ export default function ReelStudio() {
 
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Position picker ───────────────────────────────────────────────────────────
+const FONT_FAMILY_MAP: Record<string, string> = {
+  impact:      "Impact, 'Arial Black', sans-serif",
+  bebas:       "'Bebas Neue', Impact, sans-serif",
+  oswald:      "'Oswald', sans-serif",
+  poppins:     "'Poppins', sans-serif",
+  great_vibes: "'Great Vibes', cursive",
+  pacifico:    "'Pacifico', cursive",
+};
+
+function PositionPicker({ videoPreview, posX, posY, onChange, styleConfig, sampleText }: {
+  videoPreview: string | null;
+  posX: number; posY: number;
+  onChange: (x: number, y: number) => void;
+  styleConfig: StyleConfig;
+  sampleText: string;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  const clamp = (v: number) => Math.round(Math.max(5, Math.min(95, v)));
+
+  const fromEvent = (clientX: number, clientY: number) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    onChange(clamp(((clientX - rect.left) / rect.width) * 100),
+             clamp(((clientY - rect.top)  / rect.height) * 100));
+  };
+
+  const onMouseDown = (e: React.MouseEvent) => { dragging.current = true; fromEvent(e.clientX, e.clientY); };
+  const onMouseMove = (e: React.MouseEvent) => { if (dragging.current) fromEvent(e.clientX, e.clientY); };
+  const onMouseUp   = () => { dragging.current = false; };
+
+  const onTouchStart = (e: React.TouchEvent) => { dragging.current = true; fromEvent(e.touches[0].clientX, e.touches[0].clientY); };
+  const onTouchMove  = (e: React.TouchEvent) => { if (dragging.current) fromEvent(e.touches[0].clientX, e.touches[0].clientY); };
+  const onTouchEnd   = () => { dragging.current = false; };
+
+  const previewFs = Math.max(9, styleConfig.font_size * 0.45);
+  const isScriptFont = styleConfig.font === "great_vibes" || styleConfig.font === "pacifico";
+
+  return (
+    <div
+      ref={containerRef}
+      className="relative rounded-xl overflow-hidden select-none touch-none"
+      style={{ aspectRatio: "9/16", maxHeight: "240px", background: "#0a0a0f", cursor: "crosshair" }}
+      onMouseDown={onMouseDown} onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp} onMouseLeave={onMouseUp}
+      onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+    >
+      {/* Video / placeholder */}
+      {videoPreview
+        ? <video src={videoPreview} className="absolute inset-0 w-full h-full object-cover pointer-events-none" muted />
+        : <div className="absolute inset-0 flex items-center justify-center pointer-events-none"
+            style={{ fontSize: 10, color: "rgba(255,255,255,0.2)" }}>Upload video for preview</div>
+      }
+
+      {/* Rule-of-thirds grid */}
+      <div className="absolute inset-0 pointer-events-none" style={{
+        backgroundImage: "linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)",
+        backgroundSize: "33.33% 33.33%",
+      }} />
+
+      {/* Text preview */}
+      <div className="absolute pointer-events-none" style={{
+        left: `${posX}%`, top: `${posY}%`,
+        transform: "translate(-50%, -50%)",
+        color: styleConfig.color,
+        fontSize: previewFs,
+        fontFamily: FONT_FAMILY_MAP[styleConfig.font] ?? "sans-serif",
+        fontWeight: isScriptFont ? "normal" : "900",
+        textAlign: "center",
+        WebkitTextStroke: styleConfig.stroke > 0 ? `${styleConfig.stroke * 0.5}px ${styleConfig.stroke_color}` : undefined,
+        textShadow: styleConfig.shadow_blur > 0
+          ? `0 ${styleConfig.shadow_blur * 0.4}px ${styleConfig.shadow_blur * 0.8}px rgba(0,0,0,0.9)`
+          : undefined,
+        whiteSpace: "nowrap", maxWidth: "88%", overflow: "hidden", textOverflow: "ellipsis",
+        zIndex: 10, lineHeight: 1.2,
+      }}>
+        {sampleText}
+      </div>
+
+      {/* Handle */}
+      <div className="absolute pointer-events-none" style={{
+        left: `${posX}%`, top: `${posY}%`,
+        transform: "translate(-50%, -50%)",
+        width: 14, height: 14, borderRadius: "50%",
+        border: "2px solid rgba(168,85,247,0.9)",
+        boxShadow: "0 0 0 3px rgba(168,85,247,0.25)",
+        zIndex: 20,
+      }} />
+
+      <div className="absolute bottom-1 right-1.5 pointer-events-none"
+        style={{ fontSize: 9, color: "rgba(255,255,255,0.35)" }}>drag to move</div>
     </div>
   );
 }
